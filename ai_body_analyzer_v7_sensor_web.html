@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>AI 체형 분석 - 실시간 카메라</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#f5f7fb;color:#171a21;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.container{max-width:760px;margin:auto;padding:22px 16px 40px}
+h1{font-size:28px;margin:4px 0 8px}
+.sub{color:#666;line-height:1.55;margin-bottom:18px}
+.card{background:#fff;border-radius:22px;padding:18px;margin:14px 0;box-shadow:0 4px 18px #0000000b}
+h2{font-size:19px;margin:0 0 12px}
+.camera{position:relative;overflow:hidden;background:#111;border-radius:18px;aspect-ratio:3/4}
+video,canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+canvas{pointer-events:none}
+.status{margin-top:12px;padding:13px 15px;border-radius:13px;background:#eef1f6;font-weight:700}
+.status.ok{background:#e7f8ec;color:#08752c}
+.status.warn{background:#fff4d9;color:#8a5a00}
+.status.bad{background:#ffe8e8;color:#a10000}
+.controls{display:flex;gap:10px;margin-top:12px}
+button{border:0;border-radius:13px;padding:14px 16px;font-size:16px;font-weight:750;cursor:pointer;flex:1}
+.primary{background:#243bdb;color:white}
+.secondary{background:#edf0f5;color:#20242c}
+button:disabled{opacity:.45}
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.metric{padding:14px;background:#f7f8fa;border-radius:14px}
+.metric b{display:block;font-size:20px;margin-top:4px}
+.small{font-size:13px;color:#777;line-height:1.5}
+.guide{position:absolute;inset:8% 13%;border:2px dashed #ffffffaa;border-radius:45% 45% 38% 38%;pointer-events:none}
+.guide:after{content:"전신을 이 안에 맞춰주세요";position:absolute;bottom:-30px;left:0;right:0;text-align:center;color:white;font-size:13px;text-shadow:0 1px 4px #000}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>AI 체형 분석 테스트</h1>
+  <div class="sub">실시간 카메라에서 사람의 관절을 AI로 인식하고, 전신이 충분히 보이면 촬영할 수 있도록 안내합니다.</div>
+  <div class="card">
+    <h2>📱 스마트폰 센서 상태</h2>
+    <p class="small">가속도계·자이로/방향 센서를 이용해 휴대폰의 기울기와 움직임을 확인합니다. 센서 데이터는 카메라 촬영 자세 보정에 사용됩니다.</p>
+    <div class="grid">
+      <div class="metric">센서 권한<b id="sensorPermission">대기 중</b></div>
+      <div class="metric">기기 기울기<b id="tiltValue">-</b></div>
+      <div class="metric">움직임<b id="motionValue">-</b></div>
+      <div class="metric">자세 안내<b id="sensorGuide">센서 시작 필요</b></div>
+    </div>
+    <div class="controls">
+      <button id="sensorStart" class="primary">📡 센서 시작</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>① 실시간 전신 촬영</h2>
+    <div class="camera">
+      <img id="capturedImage" class="hidden" alt="촬영된 사진" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover">
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="overlay"></canvas>
+      <div class="guide"></div>
+    </div>
+    <div id="status" class="status">카메라를 시작해주세요.</div>
+    <div class="controls">
+      <button id="start" class="primary">🎥 실시간 카메라</button>
+      <label for="mobileCapture" class="secondary" style="display:flex;align-items:center;justify-content:center;flex:1;cursor:pointer">📸 사진 촬영</label>
+      <input id="mobileCapture" type="file" accept="image/*" capture="environment" class="hidden">
+      <button id="capture" class="secondary" disabled>📸 촬영</button>
+    </div>
+    <div class="controls">
+      <button id="switch" class="secondary" disabled>🔄 카메라 전환</button>
+      <button id="stop" class="secondary" disabled>⏹ 중지</button>
+    </div>
+    <p class="small">💡 다운로드한 HTML 파일을 삼성 인터넷에서 열었다면 <b>📸 사진 촬영</b>을 사용하세요. 휴대폰 기본 카메라로 촬영한 뒤 AI 분석을 진행합니다.<br>실시간 카메라는 HTTPS 환경에서 사용할 수 있습니다.</p>
+  </div>
+
+  <div class="card">
+    <h2>② 내 키 입력</h2>
+    <div style="display:flex;gap:10px;align-items:center">
+      <input id="heightInput" type="number" inputmode="decimal" min="100" max="230" step="0.1"
+        placeholder="예: 175" style="flex:1;padding:14px;border:1px solid #d9dde5;border-radius:13px;font-size:17px">
+      <span style="font-weight:700">cm</span>
+    </div>
+    <p class="small">키를 입력하면 AI가 촬영 화면의 신체 비율을 기준으로 신체 길이를 대략적인 cm 단위로 환산합니다.</p>
+  </div>
+
+  <div id="resultCard" class="card hidden">
+    <h2>③ AI 신체 치수 추정 결과</h2>
+    <div class="grid">
+      <div class="metric">예상 어깨너비<b id="shoulder">-</b></div>
+      <div class="metric">예상 골반너비<b id="hip">-</b></div>
+      <div class="metric">예상 다리길이<b id="leg">-</b></div>
+      <div class="metric">상·하체 참고<b id="shape">-</b></div>
+    </div>
+    <p class="small">📱 센서 상태: <b id="resultSensorStatus">-</b><br>※ 키와 2D 관절 위치를 이용한 <b>추정값</b>입니다. 카메라 거리·자세·옷·렌즈 왜곡 등에 따라 실제 치수와 차이가 날 수 있습니다. 가슴둘레·허리둘레처럼 깊이 정보가 필요한 치수는 아직 정확히 측정하지 않습니다.</p>
+  </div>
+
+  <div class="card">
+    <h2>다음 단계</h2>
+    <div class="small">
+      이 버전에서는 <b>스마트폰 센서 → 실시간 관절 인식 → 전신 확인 → 키 입력 → 신체 길이 추정</b>까지 구현합니다.<br>
+      다음 단계에서 의류 사이즈표와 연결해 <b>S/M/L/XL 추천</b> 기능을 추가할 수 있습니다.
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import {PoseLandmarker, FilesetResolver, DrawingUtils}
+  from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/+esm";
+
+const video=document.getElementById("video");
+const canvas=document.getElementById("overlay");
+const ctx=canvas.getContext("2d");
+const startBtn=document.getElementById("start");
+const captureBtn=document.getElementById("capture");
+const switchBtn=document.getElementById("switch");
+const stopBtn=document.getElementById("stop");
+const statusEl=document.getElementById("status");
+const resultCard=document.getElementById("resultCard");
+
+let stream=null, facingMode="user", poseLandmarker=null, running=false;
+let sensorStarted=false, sensorData={alpha:null,beta:null,gamma:null,ax:null,ay:null,az:null,rotation:null};
+let lastResult=null, lastVideoTime=-1, animationId=null;
+
+const MODEL_URL="https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
+const WASM_URL="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm";
+
+function setStatus(text,type=""){
+  statusEl.textContent=text;
+  statusEl.className="status "+type;
+}
+
+async function loadAI(){
+  if(poseLandmarker) return;
+  setStatus("AI 모델을 불러오는 중입니다...");
+  const vision=await FilesetResolver.forVisionTasks(WASM_URL);
+  poseLandmarker=await PoseLandmarker.createFromOptions(vision,{
+    baseOptions:{modelAssetPath:MODEL_URL},
+    runningMode:"VIDEO",
+    numPoses:1,
+    minPoseDetectionConfidence:.5,
+    minPosePresenceConfidence:.5,
+    minTrackingConfidence:.5
+  });
+}
+
+
+const sensorPermissionEl=document.getElementById("sensorPermission");
+const tiltValueEl=document.getElementById("tiltValue");
+const motionValueEl=document.getElementById("motionValue");
+const sensorGuideEl=document.getElementById("sensorGuide");
+
+function updateSensorUI(){
+  if(sensorData.beta==null && sensorData.gamma==null){
+    tiltValueEl.textContent="-";
+  }else{
+    const b=(sensorData.beta??0).toFixed(0);
+    const g=(sensorData.gamma??0).toFixed(0);
+    tiltValueEl.textContent=`앞뒤 ${b}° / 좌우 ${g}°`;
+  }
+
+  if(sensorData.ax==null){
+    motionValueEl.textContent="-";
+  }else{
+    const mag=Math.sqrt((sensorData.ax||0)**2+(sensorData.ay||0)**2+(sensorData.az||0)**2);
+    motionValueEl.textContent=mag.toFixed(2)+" m/s²";
+  }
+
+  if(sensorData.beta==null && sensorData.gamma==null){
+    sensorGuideEl.textContent="센서 대기";
+  }else{
+    const beta=Math.abs(sensorData.beta||0);
+    const gamma=Math.abs(sensorData.gamma||0);
+    if(beta>25 || gamma>25) sensorGuideEl.textContent="휴대폰을 조금 똑바로";
+    else sensorGuideEl.textContent="✓ 촬영 자세 양호";
+  }
+}
+
+function onOrientation(e){
+  sensorData.alpha=e.alpha;
+  sensorData.beta=e.beta;
+  sensorData.gamma=e.gamma;
+  updateSensorUI();
+}
+
+function onMotion(e){
+  const a=e.accelerationIncludingGravity || e.acceleration;
+  if(a){
+    sensorData.ax=a.x;
+    sensorData.ay=a.y;
+    sensorData.az=a.z;
+  }
+  sensorData.rotation=e.rotationRate || null;
+  updateSensorUI();
+}
+
+async function startSensors(){
+  try{
+    if(!window.isSecureContext){
+      sensorPermissionEl.textContent="HTTPS 필요";
+      sensorGuideEl.textContent="HTTPS 주소에서 실행";
+      return false;
+    }
+
+    if(typeof DeviceMotionEvent !== "undefined" &&
+       typeof DeviceMotionEvent.requestPermission === "function"){
+      const p=await DeviceMotionEvent.requestPermission();
+      if(p!=="granted"){
+        sensorPermissionEl.textContent="거부됨";
+        sensorGuideEl.textContent="센서 권한 허용 필요";
+        return false;
+      }
+    }
+
+    if(typeof DeviceOrientationEvent !== "undefined" &&
+       typeof DeviceOrientationEvent.requestPermission === "function"){
+      const p=await DeviceOrientationEvent.requestPermission();
+      if(p!=="granted"){
+        sensorPermissionEl.textContent="거부됨";
+        sensorGuideEl.textContent="방향 센서 권한 허용 필요";
+        return false;
+      }
+    }
+
+    window.addEventListener("deviceorientation",onOrientation,true);
+    window.addEventListener("devicemotion",onMotion,true);
+    sensorStarted=true;
+    sensorPermissionEl.textContent="✓ 허용됨";
+    sensorGuideEl.textContent="센서 데이터 수신 중";
+    return true;
+  }catch(err){
+    console.error(err);
+    sensorPermissionEl.textContent="사용 불가";
+    sensorGuideEl.textContent="브라우저 권한 확인";
+    return false;
+  }
+}
+
+async function startCamera(){
+  try{
+    await loadAI();
+    if(stream) stream.getTracks().forEach(t=>t.stop());
+
+    stream=await navigator.mediaDevices.getUserMedia({
+      video:{
+        facingMode:{ideal:facingMode},
+        width:{ideal:1280},
+        height:{ideal:720}
+      },
+      audio:false
+    });
+
+    video.srcObject=stream;
+    await video.play();
+
+    switchBtn.disabled=false;
+    stopBtn.disabled=false;
+    captureBtn.disabled=true;
+    running=true;
+    setStatus(sensorStarted ? "카메라 + 스마트폰 센서가 켜졌습니다. 전신이 보이도록 맞춰주세요." : "카메라가 켜졌습니다. 전신이 보이도록 맞춰주세요.","warn");
+    requestAnimationFrame(loop);
+  }catch(e){
+    console.error(e);
+    running=false;
+    let msg="카메라를 사용할 수 없습니다.";
+    if(e.name==="NotAllowedError") msg="카메라 권한이 거부되었습니다. 브라우저 사이트 설정에서 카메라 권한을 허용해주세요.";
+    else if(e.name==="NotFoundError") msg="사용할 수 있는 카메라를 찾지 못했습니다.";
+    else if(location.protocol!=="https:" && location.hostname!=="localhost") msg="이 기능은 HTTPS 또는 localhost에서 실행해야 합니다.";
+    setStatus(msg,"bad");
+  }
+}
+
+function getVisible(lm){
+  return lm && (lm.visibility===undefined || lm.visibility>.55);
+}
+
+function analyzeLandmarks(lm){
+  const ids={nose:0,lShoulder:11,rShoulder:12,lHip:23,rHip:24,lKnee:25,rKnee:26,lAnkle:27,rAnkle:28};
+  const required=Object.values(ids);
+  const visible=required.every(i=>getVisible(lm[i]));
+  if(!visible) return {ready:false,reason:"머리·어깨·골반·무릎·발목이 모두 보이도록 조정해주세요."};
+
+  const xs=required.map(i=>lm[i].x), ys=required.map(i=>lm[i].y);
+  const minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys);
+  const margin=.04;
+  if(minY<margin || maxY>1-margin || minX<margin || maxX>1-margin)
+    return {ready:false,reason:"발끝이나 몸 일부가 잘리지 않게 조금 뒤로 이동해주세요."};
+
+  const bodyH=Math.max(0.01,maxY-minY);
+  const shoulder=Math.hypot(lm[11].x-lm[12].x,lm[11].y-lm[12].y)/bodyH;
+  const hip=Math.hypot(lm[23].x-lm[24].x,lm[23].y-lm[24].y)/bodyH;
+  const leg=((Math.hypot(lm[23].x-lm[27].x,lm[23].y-lm[27].y)+
+              Math.hypot(lm[24].x-lm[28].x,lm[24].y-lm[28].y))/2)/bodyH;
+
+  return {ready:true,shoulder,hip,leg,shape:shoulder/Math.max(.01,hip)};
+}
+
+function drawPose(result){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  if(!result?.landmarks?.length) return;
+  const drawingUtils=new DrawingUtils(ctx);
+  for(const lm of result.landmarks){
+    drawingUtils.drawConnectors(lm,PoseLandmarker.POSE_CONNECTIONS,{color:"#00e676",lineWidth:4});
+    drawingUtils.drawLandmarks(lm,{color:"#ffffff",fillColor:"#2962ff",lineWidth:2,radius:4});
+  }
+}
+
+function loop(){
+  if(!running) return;
+  if(video.readyState>=2 && video.videoWidth){
+    if(canvas.width!==video.videoWidth || canvas.height!==video.videoHeight){
+      canvas.width=video.videoWidth; canvas.height=video.videoHeight;
+    }
+    if(video.currentTime!==lastVideoTime){
+      lastVideoTime=video.currentTime;
+      const result=poseLandmarker.detectForVideo(video,performance.now());
+      lastResult=result;
+      drawPose(result);
+
+      const lm=result?.landmarks?.[0];
+      if(!lm){
+        setStatus("사람을 찾는 중입니다. 전신이 카메라에 보이게 서주세요.","bad");
+        captureBtn.disabled=true;
+      }else{
+        const a=analyzeLandmarks(lm);
+        if(a.ready){
+          setStatus("✓ 촬영 가능 — 전신이 잘 보입니다.","ok");
+          captureBtn.disabled=false;
+        }else{
+          setStatus("⚠ "+a.reason,"warn");
+          captureBtn.disabled=true;
+        }
+      }
+    }
+  }
+  animationId=requestAnimationFrame(loop);
+}
+
+function showResult(a){
+  const height = parseFloat(document.getElementById("heightInput").value);
+  if(!Number.isFinite(height) || height < 100 || height > 230){
+    setStatus("키를 100~230 cm 범위에서 입력한 뒤 촬영해주세요.","warn");
+    document.getElementById("heightInput").focus();
+    return;
+  }
+
+  resultCard.classList.remove("hidden");
+  document.getElementById("resultSensorStatus").textContent = sensorStarted ? "가속도/방향 센서 데이터 사용" : "센서 미사용";
+
+  const shoulderCm = a.shoulder * height;
+  const hipCm = a.hip * height;
+  const legCm = a.leg * height;
+
+  document.getElementById("shoulder").textContent = shoulderCm.toFixed(1) + " cm";
+  document.getElementById("hip").textContent = hipCm.toFixed(1) + " cm";
+  document.getElementById("leg").textContent = legCm.toFixed(1) + " cm";
+
+  let shape = "어깨·골반 비율 유사";
+  if(a.shape > 1.08) shape = "어깨가 넓은 편";
+  else if(a.shape < 0.92) shape = "골반이 넓은 편";
+  document.getElementById("shape").textContent = shape;
+}
+
+captureBtn.addEventListener("click",()=>{
+  if(!lastResult?.landmarks?.[0]) return;
+  const a=analyzeLandmarks(lastResult.landmarks[0]);
+  if(!a.ready) return;
+
+  const height = parseFloat(document.getElementById("heightInput").value);
+  if(!Number.isFinite(height) || height < 100 || height > 230){
+    setStatus("촬영 전 위에서 키를 입력해주세요. 예: 175 cm","warn");
+    document.getElementById("heightInput").focus();
+    return;
+  }
+  showResult(a);
+});
+
+switchBtn.addEventListener("click",async()=>{
+  facingMode=facingMode==="user"?"environment":"user";
+  await startCamera();
+});
+
+stopBtn.addEventListener("click",()=>{
+  running=false;
+  if(animationId) cancelAnimationFrame(animationId);
+  if(stream) stream.getTracks().forEach(t=>t.stop());
+  stream=null;
+  video.srcObject=null;
+  switchBtn.disabled=true;
+  stopBtn.disabled=true;
+  captureBtn.disabled=true;
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  setStatus("카메라가 중지되었습니다.");
+});
+
+document.getElementById("heightInput").addEventListener("input",()=>{
+  const h=parseFloat(document.getElementById("heightInput").value);
+  if(Number.isFinite(h) && h>=100 && h<=230 && running){
+    const lm=lastResult?.landmarks?.[0];
+    if(lm){
+      const a=analyzeLandmarks(lm);
+      if(a.ready) setStatus("✓ 촬영 가능 — 키 입력 완료","ok");
+    }
+  }
+});
+
+document.getElementById("sensorStart").addEventListener("click", async ()=>{
+  await startSensors();
+});
+
+startBtn.addEventListener("click", async ()=>{
+  if(!sensorStarted) await startSensors();
+  await startCamera();
+});
+
+
+const mobileCapture = document.getElementById("mobileCapture");
+const capturedImage = document.getElementById("capturedImage");
+
+mobileCapture.addEventListener("change", async (event)=>{
+  const file = event.target.files?.[0];
+  if(!file) return;
+
+  const url = URL.createObjectURL(file);
+  capturedImage.src = url;
+  capturedImage.classList.remove("hidden");
+  video.classList.add("hidden");
+
+  setStatus("사진을 불러오는 중입니다...");
+  try{
+    await capturedImage.decode();
+  }catch(e){}
+
+  // Load the captured photo into an offscreen canvas and run PoseLandmarker on it.
+  try{
+    await loadAI();
+    const w = capturedImage.naturalWidth;
+    const h = capturedImage.naturalHeight;
+    if(!w || !h) throw new Error("이미지 크기를 읽을 수 없습니다.");
+
+    canvas.width = w;
+    canvas.height = h;
+    ctx.clearRect(0,0,w,h);
+    ctx.drawImage(capturedImage,0,0,w,h);
+
+    const result = poseLandmarker.detect(capturedImage);
+    lastResult = result;
+    drawPose(result);
+
+    const lm = result?.landmarks?.[0];
+    if(!lm){
+      setStatus("사진에서 사람을 찾지 못했습니다. 전신이 보이는 사진으로 다시 촬영해주세요.","bad");
+      captureBtn.disabled = true;
+      return;
+    }
+
+    const a = analyzeLandmarks(lm);
+    if(!a.ready){
+      setStatus("⚠ "+a.reason,"warn");
+      captureBtn.disabled = true;
+      return;
+    }
+
+    const height = parseFloat(document.getElementById("heightInput").value);
+    if(!Number.isFinite(height) || height < 100 || height > 230){
+      setStatus("AI 인식 완료. 위에서 키를 입력한 뒤 '촬영' 버튼을 눌러주세요.","warn");
+      captureBtn.disabled = false;
+      return;
+    }
+
+    setStatus("✓ 사진 분석 완료 — 촬영 결과를 확인할 수 있습니다.","ok");
+    captureBtn.disabled = false;
+  }catch(err){
+    console.error(err);
+    setStatus("사진 AI 분석에 실패했습니다. 인터넷 연결을 확인해주세요.","bad");
+  }
+});
+
+if(location.protocol!=="https:" && location.hostname!=="localhost"){
+  setStatus("실시간 카메라와 스마트폰 센서는 HTTPS 사이트에서 사용하는 것을 권장합니다. 파일로 직접 열 경우 📸 사진 촬영을 사용하세요.","warn");
+}
+</script>
+</body>
+</html>
